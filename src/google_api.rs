@@ -1,15 +1,17 @@
 use anyhow::{Context, Result};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use dirs::config_dir;
+use html2text; // NEW: Import the html2text crate
 use oauth2::{
     basic::{BasicClient, BasicTokenType},
-    AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, EmptyExtraTokenFields, // Added here
-    PkceCodeChallenge, RedirectUrl, Scope, StandardTokenResponse, TokenUrl, // Added here
-    TokenResponse,
+    AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, EmptyExtraTokenFields,
+    PkceCodeChallenge, RedirectUrl, Scope, StandardTokenResponse, TokenUrl, TokenResponse,
 };
 use serde::{Deserialize, Serialize};
 use std::fs;
 use tokio::io::{stdin, AsyncBufReadExt, BufReader};
 
+// --- Structs and Constants (mostly unchanged) ---
 const GMAIL_API_TOKEN_PATH: &str = "gmail-cli/token.json";
 const GOOGLE_AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
@@ -38,12 +40,22 @@ pub struct Message {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct MessageDetail {
     pub id: String,
+    pub snippet: String,
     pub payload: Option<MessagePayload>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct MessagePayload {
     pub headers: Vec<MessageHeader>,
+    pub body: Option<MessageBody>,
+    pub parts: Option<Vec<MessagePayload>>,
+    pub mime_type: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct MessageBody {
+    pub data: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -65,6 +77,9 @@ impl MessageDetail {
     }
 }
 
+// --- Authentication and API call functions ---
+
+// get_auth_token and related functions are unchanged
 pub async fn get_auth_token() -> Result<ApiToken> {
     let token = read_token_from_file().await?;
     match token {
@@ -87,15 +102,10 @@ async fn get_new_token_from_auth_code() -> Result<StandardTokenResponse<EmptyExt
     let auth_url = AuthUrl::new(GOOGLE_AUTH_URL.to_string())?;
     let token_url = TokenUrl::new(GOOGLE_TOKEN_URL.to_string())?;
 
-    let client = BasicClient::new(
-        client_id,
-        Some(client_secret),
-        auth_url,
-        Some(token_url),
-    )
-    .set_redirect_uri(RedirectUrl::new("http://localhost".to_string())?);
+    let client = BasicClient::new(client_id, Some(client_secret), auth_url, Some(token_url))
+        .set_redirect_uri(RedirectUrl::new("http://localhost".to_string())?);
 
-    let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
+        let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
 
     let (auth_url, _csrf_token) = client
         .authorize_url(CsrfToken::new_random)
@@ -136,7 +146,7 @@ pub async fn list_messages(token: &ApiToken) -> Result<MessageList> {
 pub async fn get_message_details(token: &ApiToken, message_id: &str) -> Result<MessageDetail> {
     let client = reqwest::Client::new();
     let url = format!(
-        "https://www.googleapis.com/gmail/v1/users/me/messages/{}?format=metadata&metadataHeaders=Subject&metadataHeaders=From",
+        "https://www.googleapis.com/gmail/v1/users/me/messages/{}?format=full",
         message_id
     );
 
@@ -151,7 +161,63 @@ pub async fn get_message_details(token: &ApiToken, message_id: &str) -> Result<M
     Ok(res)
 }
 
+// --- UPDATED: Body Decoding Logic ---
 
+fn find_body_parts(payload: &MessagePayload) -> (Option<String>, Option<String>) {
+    let mut plain_text = None;
+    let mut html_text = None;
+
+    if payload.mime_type == "text/plain" {
+        if let Some(data) = payload.body.as_ref().and_then(|b| b.data.as_ref()) {
+            if let Ok(decoded_bytes) = URL_SAFE_NO_PAD.decode(data) {
+                plain_text = String::from_utf8(decoded_bytes).ok();
+            }
+        }
+    } else if payload.mime_type == "text/html" {
+        if let Some(data) = payload.body.as_ref().and_then(|b| b.data.as_ref()) {
+            if let Ok(decoded_bytes) = URL_SAFE_NO_PAD.decode(data) {
+                html_text = String::from_utf8(decoded_bytes).ok();
+            }
+        }
+    }
+
+    // Recursively search in multipart messages
+    if let Some(parts) = &payload.parts {
+        for part in parts {
+            let (part_plain, part_html) = find_body_parts(part);
+            if plain_text.is_none() {
+                plain_text = part_plain;
+            }
+            if html_text.is_none() {
+                html_text = part_html;
+            }
+        }
+    }
+
+    (plain_text, html_text)
+}
+
+pub fn decode_email_body(detail: &MessageDetail) -> String {
+    if let Some(payload) = &detail.payload {
+        let (plain, html) = find_body_parts(payload);
+
+        // Prefer the plain text version if it exists
+        if let Some(plain_text) = plain {
+            return plain_text;
+        }
+
+        // Otherwise, fall back to the HTML version and convert it to text
+        if let Some(html_text) = html {
+            return html2text::from_read(html_text.as_bytes(), 80);
+        }
+    }
+
+    // If no body is found, use the snippet as a last resort
+    detail.snippet.clone()
+}
+
+
+// --- File I/O (unchanged) ---
 async fn read_token_from_file() -> Result<Option<ApiToken>> {
     if let Some(mut path) = config_dir() {
         path.push(GMAIL_API_TOKEN_PATH);
