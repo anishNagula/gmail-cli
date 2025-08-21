@@ -35,7 +35,6 @@ pub struct Message {
     pub thread_id: String,
 }
 
-// NEW: Structs for holding detailed message data from the 'get' endpoint
 #[derive(Serialize, Deserialize, Debug)]
 pub struct MessageDetail {
     pub id: String,
@@ -53,7 +52,6 @@ pub struct MessageHeader {
     pub value: String,
 }
 
-// NEW: Helper implementation to easily extract a header's value
 impl MessageDetail {
     pub fn get_header(&self, name: &str) -> String {
         self.payload
@@ -67,7 +65,6 @@ impl MessageDetail {
     }
 }
 
-// CLEANED: The get_auth_token function without the debugging code
 pub async fn get_auth_token() -> Result<ApiToken> {
     let token = read_token_from_file().await?;
     match token {
@@ -122,7 +119,6 @@ async fn get_new_token_from_auth_code() -> Result<StandardTokenResponse<EmptyExt
     Ok(token_response)
 }
 
-// UPDATED: This function now limits the results to the top 50 messages
 pub async fn list_messages(token: &ApiToken) -> Result<MessageList> {
     let client = reqwest::Client::new();
     let url = "https://www.googleapis.com/gmail/v1/users/me/messages?maxResults=50";
@@ -137,7 +133,6 @@ pub async fn list_messages(token: &ApiToken) -> Result<MessageList> {
     Ok(res)
 }
 
-// NEW: This function gets the metadata (From, Subject) for a single message ID
 pub async fn get_message_details(token: &ApiToken, message_id: &str) -> Result<MessageDetail> {
     let client = reqwest::Client::new();
     let url = format!(

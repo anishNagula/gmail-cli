@@ -15,12 +15,12 @@ enum Commands {
 }
 
 #[tokio::main]
-async fn main() { // Make `main` async
+async fn main() {
     let args = Args::parse();
     
     match args.command {
         Commands::List => {
-            // Get the authentication token
+            // auth token
             let auth_token = match google_api::get_auth_token().await {
                 Ok(token) => token,
                 Err(e) => {
@@ -29,8 +29,8 @@ async fn main() { // Make `main` async
                 }
             };
             
-            // Now you can start the TUI and pass the auth token to it
-            if let Err(e) = tui::run(auth_token).await { // Pass auth_token
+            
+            if let Err(e) = tui::run(auth_token).await {
                 eprintln!("TUI error: {:?}", e);
             }
         }
