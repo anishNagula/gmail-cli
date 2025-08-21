@@ -8,9 +8,9 @@ use crossterm::{
 use futures::future::join_all;
 use ratatui::{
     backend::CrosstermBackend,
-    layout::Constraint,
-    style::{Style, Stylize},
-    widgets::{Block, Borders, Cell, Row, Table},
+    layout::{Constraint, Direction, Layout},
+    style::{Color, Style, Stylize},
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table},
     Terminal,
 };
 use std::io::stdout;
@@ -22,6 +22,29 @@ struct EmailInfo {
 
 struct App {
     emails: Vec<EmailInfo>,
+    selected_index: usize,
+}
+
+impl App {
+    fn previous(&mut self) {
+        if !self.emails.is_empty() {
+            if self.selected_index > 0 {
+                self.selected_index -= 1;
+            } else {
+                self.selected_index = self.emails.len() - 1;
+            }
+        }
+    }
+
+    fn next(&mut self) {
+        if !self.emails.is_empty() {
+            if self.selected_index < self.emails.len() - 1 {
+                self.selected_index += 1;
+            } else {
+                self.selected_index = 0;
+            }
+        }
+    }
 }
 
 pub async fn run(token: google_api::ApiToken) -> Result<()> {
@@ -38,14 +61,17 @@ pub async fn run(token: google_api::ApiToken) -> Result<()> {
 
     let emails: Vec<EmailInfo> = details_results
         .into_iter()
-        .filter_map(Result::ok) 
+        .filter_map(Result::ok)
         .map(|detail| EmailInfo {
             from: detail.get_header("From"),
             subject: detail.get_header("Subject"),
         })
         .collect();
 
-    let app = App { emails };
+    let mut app = App {
+        emails,
+        selected_index: 0,
+    };
 
     // start tui
     enable_raw_mode()?;
@@ -56,16 +82,30 @@ pub async fn run(token: google_api::ApiToken) -> Result<()> {
 
     loop {
         terminal.draw(|f| {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Min(0),
+                    Constraint::Length(1),
+                ])
+                .split(f.area());
+
             let header_cells = ["From", "Subject"]
                 .iter()
                 .map(|h| Cell::from(*h).style(Style::default().bold().underlined()));
             let header = Row::new(header_cells).height(1);
 
-            let rows = app.emails.iter().map(|email| {
+            let rows = app.emails.iter().enumerate().map(|(i, email)| {
+                let style = if i == app.selected_index {
+                    Style::default().bg(Color::Blue)
+                } else {
+                    Style::default()
+                };
                 Row::new(vec![
                     Cell::from(email.from.clone()),
                     Cell::from(email.subject.clone()),
                 ])
+                .style(style)
             });
 
             let table = Table::new(
@@ -78,14 +118,22 @@ pub async fn run(token: google_api::ApiToken) -> Result<()> {
             .header(header)
             .block(Block::default().borders(Borders::ALL).title("Inbox (Top 50)"));
 
-            f.render_widget(table, f.area());
+            f.render_widget(table, chunks[0]);
+
+            let footer_text = "↑/↓: Navigate  |  q: Quit";
+            let footer = Paragraph::new(footer_text)
+                .style(Style::default().fg(Color::White).bg(Color::DarkGray));
+            f.render_widget(footer, chunks[1]);
         })?;
 
         // exit with q
         if event::poll(std::time::Duration::from_millis(250))? {
             if let Event::Key(key) = event::read()? {
-                if key.code == KeyCode::Char('q') {
-                    break;
+                match key.code {
+                    KeyCode::Char('q') => break,
+                    KeyCode::Down => app.next(),
+                    KeyCode::Up => app.previous(),
+                    _ => {}
                 }
             }
         }
