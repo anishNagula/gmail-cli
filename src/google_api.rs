@@ -15,7 +15,7 @@ const GMAIL_API_TOKEN_PATH: &str = "gmail-cli/token.json";
 const GOOGLE_AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ApiToken {
     pub access_token: String,
     pub refresh_token: Option<String>,
@@ -151,7 +151,24 @@ pub async fn list_messages(token: &ApiToken) -> Result<MessageList> {
     Ok(res)
 }
 
-pub async fn get_message_details(token: &ApiToken, message_id: &str) -> Result<MessageDetail> {
+pub async fn get_message_headers(token: &ApiToken, message_id: &str) -> Result<MessageDetail> {
+    let client = reqwest::Client::new();
+    let url = format!(
+        "https://www.googleapis.com/gmail/v1/users/me/messages/{}?format=metadata&metadataHeaders=Subject&metadataHeaders=From",
+        message_id
+    );
+
+    let res = client
+        .get(&url)
+        .bearer_auth(&token.access_token)
+        .send()
+        .await?
+        .json::<MessageDetail>()
+        .await?;
+    Ok(res)
+}
+
+pub async fn get_full_message(token: &ApiToken, message_id: &str) -> Result<MessageDetail> {
     let client = reqwest::Client::new();
     let url = format!(
         "https://www.googleapis.com/gmail/v1/users/me/messages/{}?format=full",
@@ -165,7 +182,6 @@ pub async fn get_message_details(token: &ApiToken, message_id: &str) -> Result<M
         .await?
         .json::<MessageDetail>()
         .await?;
-
     Ok(res)
 }
 
