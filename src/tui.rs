@@ -24,9 +24,9 @@ struct EmailInfo {
     id: String,
     from: String,
     subject: String,
+    is_unread: bool,
 }
 
-// UPDATED: The App struct now tracks the scroll offset
 struct App {
     mode: AppMode,
     emails: Vec<EmailInfo>,
@@ -56,7 +56,6 @@ impl App {
         }
     }
 
-    // UPDATED: Helper functions for scrolling
     fn scroll_down(&mut self) {
         self.scroll_offset = self.scroll_offset.saturating_add(1);
     }
@@ -67,22 +66,22 @@ impl App {
 }
 
 pub async fn run(token: google_api::ApiToken) -> Result<()> {
-    // --- Data Fetching ---
     let message_list = google_api::list_messages(&token).await?;
     let message_ids = message_list.messages.unwrap_or_default();
 
-    let header_futures = message_ids
+    let detail_futures = message_ids
         .iter()
         .map(|msg| google_api::get_message_details(&token, &msg.id));
-    let header_results = join_all(header_futures).await;
+    let details_results = join_all(detail_futures).await;
 
-    let emails: Vec<EmailInfo> = header_results
+    let emails: Vec<EmailInfo> = details_results
         .into_iter()
         .filter_map(Result::ok)
         .map(|detail| EmailInfo {
             id: detail.id.clone(),
             from: detail.get_header("From"),
             subject: detail.get_header("Subject"),
+            is_unread: detail.is_unread(),
         })
         .collect();
 
@@ -91,17 +90,15 @@ pub async fn run(token: google_api::ApiToken) -> Result<()> {
         emails,
         selected_index: 0,
         current_email_body: String::new(),
-        scroll_offset: 0, // UPDATED: Initialize scroll offset
+        scroll_offset: 0,
     };
 
-    // --- TUI Initialization ---
     enable_raw_mode()?;
     let mut stdout = stdout();
     execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // --- Main Loop ---
     loop {
         terminal.draw(|f| {
             let chunks = Layout::default()
@@ -117,11 +114,16 @@ pub async fn run(token: google_api::ApiToken) -> Result<()> {
                     let header = Row::new(header_cells).height(1);
 
                     let rows = app.emails.iter().enumerate().map(|(i, email)| {
-                        let style = if i == app.selected_index {
-                            Style::default().bg(Color::Blue)
+                        let is_selected = i == app.selected_index;
+
+                        let style = if is_selected {
+                            Style::default().bg(Color::Blue).fg(Color::Yellow)
+                        } else if email.is_unread {
+                            Style::default().bold().bg(Color::Red)
                         } else {
                             Style::default()
                         };
+
                         Row::new(vec![
                             Cell::from(email.from.clone()),
                             Cell::from(email.subject.clone()),
@@ -131,21 +133,19 @@ pub async fn run(token: google_api::ApiToken) -> Result<()> {
 
                     let table = Table::new(rows, [Constraint::Percentage(30), Constraint::Percentage(70)])
                         .header(header)
-                        .block(Block::default().borders(Borders::ALL).title("Inbox (Top 50)"));
+                        .block(Block::default().borders(Borders::ALL).title("Primary Inbox"));
                     
                     f.render_widget(table, chunks[0]);
                 }
                 AppMode::Viewing => {
-                    // UPDATED: The Paragraph widget is now scrollable
                     let email_view = Paragraph::new(app.current_email_body.as_str())
                         .block(Block::default().borders(Borders::ALL).title("Email Content"))
-                        .wrap(Wrap { trim: false }) // Use trim: false for better scroll experience
-                        .scroll((app.scroll_offset, 0)); // Tell the widget how much to scroll
+                        .wrap(Wrap { trim: false })
+                        .scroll((app.scroll_offset, 0));
                     f.render_widget(email_view, chunks[0]);
                 }
             }
 
-            // --- Footer Bar ---
             let footer_text = match app.mode {
                 AppMode::List => "↑/↓: Navigate  |  Enter: View Email  |  q: Quit",
                 AppMode::Viewing => "↑/↓: Scroll  |  q: Back to List",
@@ -155,7 +155,6 @@ pub async fn run(token: google_api::ApiToken) -> Result<()> {
             f.render_widget(footer, chunks[1]);
         })?;
 
-        // --- Event Handling ---
         if event::poll(std::time::Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
                 match app.mode {
@@ -167,14 +166,13 @@ pub async fn run(token: google_api::ApiToken) -> Result<()> {
                             if let Some(selected_email) = app.emails.get(app.selected_index) {
                                 let detail = google_api::get_message_details(&token, &selected_email.id).await?;
                                 app.current_email_body = google_api::decode_email_body(&detail);
-                                app.scroll_offset = 0; // UPDATED: Reset scroll on new email
+                                app.scroll_offset = 0;
                                 app.mode = AppMode::Viewing;
                             }
                         }
                         _ => {}
                     },
                     AppMode::Viewing => match key.code {
-                        // UPDATED: Handle scrolling and quitting
                         KeyCode::Char('q') => {
                             app.mode = AppMode::List;
                         }
@@ -187,7 +185,6 @@ pub async fn run(token: google_api::ApiToken) -> Result<()> {
         }
     }
 
-    // --- TUI Cleanup ---
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     Ok(())
