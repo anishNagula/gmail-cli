@@ -65,6 +65,12 @@ pub struct MessageHeader {
     pub value: String,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ModifyRequest {
+    remove_label_ids: Vec<String>,
+}
+
 impl MessageDetail {
     pub fn get_header(&self, name: &str) -> String {
         self.payload
@@ -183,6 +189,28 @@ pub async fn get_full_message(token: &ApiToken, message_id: &str) -> Result<Mess
         .json::<MessageDetail>()
         .await?;
     Ok(res)
+}
+
+pub async fn mark_as_read(token: &ApiToken, message_id: &str) -> Result<()> {
+    let client = reqwest::Client::new();
+    let url = format!(
+        "https://www.googleapis.com/gmail/v1/users/me/messages/{}/modify",
+        message_id
+    );
+
+    let request_body = ModifyRequest {
+        remove_label_ids: vec!["UNREAD".to_string()],
+    };
+
+    client
+        .post(&url)
+        .bearer_auth(&token.access_token)
+        .json(&request_body)
+        .send()
+        .await?
+        .error_for_status()?;
+
+    Ok(())
 }
 
 fn find_body_parts(payload: &MessagePayload) -> (Option<String>, Option<String>) {
